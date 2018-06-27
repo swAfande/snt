@@ -81,11 +81,11 @@ namespace snt
     network_->SetListener(ip_, sockfd, backlog);
   }
 
-  int NodeHandle::Accept(int sockfd, NodeAlias* sender /*= nullptr*/)
+  int NodeHandle::Accept(int sockfd, NodeAlias* sender /*= nullptr*/, bool nonblock /*= false*/)
   {
     EnsureValid();
 
-    return network_->Accept(ip_, sockfd, sender);
+    return network_->Accept(ip_, sockfd, sender, nonblock);
   }
 
   int NodeHandle::Recv(int sockfd, Data& data)

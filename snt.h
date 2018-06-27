@@ -13,6 +13,8 @@
 #include <queue>
 #include <memory>
 #include <atomic>
+#include <future>
+#include <random>
 
 namespace snt
 {
@@ -109,7 +111,7 @@ namespace snt
     void Bind(int sockfd, const NodeAlias& address);
     void BindAny(int sockfd);
     void Listen(int sockfd, int backlog);
-    int Accept(int sockfd, NodeAlias* sender = nullptr);
+    int Accept(int sockfd, NodeAlias* sender = nullptr, bool nonblock = false);
     int Recv(int sockfd, Data& data);
 
     operator bool() const;
@@ -208,12 +210,12 @@ namespace snt
       return NodeHandle(this, ip);
     }
 
-    void SetTransmissionQualityDistribution(void)
+    /*void SetTransmissionQualityDistribution(void)
     {
       //  аким-то образом задаЄм веро€тность что пр€мое соединение между 
       // двум€ нодами будет иметь такое-то качество (double, >0).
       // „то оно определ€ет - см. ExpectedDistance
-    }
+    }*/
 
     void ExpectedDistance(
       NodeHandle node1, NodeHandle node2, dist_dype distance)
@@ -338,7 +340,8 @@ namespace snt
         request.socket_ = sockfd;
         request.accepted_ = std::make_shared<bool>(false);
 
-        QueueConnectionRequest(description.address_, listener, request);
+        if (!QueueConnectionRequest(description.address_, listener, request))
+          return false;
 
         std::unique_lock<std::mutex> lck(request_mutex_);
         while (request.accepted_ && !*request.accepted_)
@@ -414,18 +417,28 @@ namespace snt
         SocketDescription& target_description = 
           sockets_[std::make_pair(target_ip, target_socket)];
 
-        if (target_description.isClosing.load())
-          return;
-
-        std::unique_lock<std::mutex> lck(target_description.message_mtx_);
-        while (!target_description.message_.empty() && !target_description.isClosing.load())
-          target_description.message_cv_.wait(lck);
+        SocketDescription* pDescription = &target_description;
 
         if (target_description.isClosing.load())
           return;
 
-        target_description.message_ = data;
-        target_description.message_cv_.notify_all();
+        std::chrono::milliseconds transmission_time = 
+          GetTimeForConnection(socket_description->connection_);
+
+        std::async([pDescription, data, transmission_time]()
+        {
+          std::unique_lock<std::mutex> lck(pDescription->message_mtx_);
+          while (!pDescription->message_.empty() && !pDescription->isClosing.load())
+            pDescription->message_cv_.wait(lck);
+
+          if (pDescription->isClosing.load())
+            return;
+
+          std::this_thread::sleep_for(transmission_time);
+
+          pDescription->message_ = data;
+          pDescription->message_cv_.notify_all();
+        });
 
         //target_description.
       }
@@ -457,7 +470,7 @@ namespace snt
       listeners_[ip].insert(sockfd);
     }
 
-    int Accept(IP ip, int sockfd, NodeAlias* sender)
+    int Accept(IP ip, int sockfd, NodeAlias* sender, bool nonblock = false)
     {
       if (!DoesSocketExist(ip, sockfd))
         return -1;
@@ -470,15 +483,19 @@ namespace snt
       ConnectionRequest request;
       {
         std::unique_lock<std::mutex> lck(description.requests_mtx_);
-        while (description.requests_.empty() && !description.isClosing.load())
-          description.requests_cv_.wait(lck);
+        if (nonblock)
+        {
+          if (description.requests_.empty() || description.isClosing.load())
+            return -1;
+        }
+        else
+        {
+          while (description.requests_.empty() && !description.isClosing.load())
+            description.requests_cv_.wait(lck);
 
-        if (description.isClosing.load())
-          return -1;
-
-        
-
-        //Look at me for I am your past and your future
+          if (description.isClosing.load())
+            return -1;
+        }
 
         assert(!description.requests_.empty());
         request = description.requests_.front();
@@ -534,7 +551,7 @@ namespace snt
     {
       for (int socket : sockets_for_node_[ip])
         CloseSocket(ip, socket);
-    }
+    }    
 
   private:    
     IP GrantNewIP()
@@ -626,6 +643,18 @@ namespace snt
         description.message_cv_.notify_all();
         description.requests_cv_.notify_all();
       }
+    }
+
+    std::chrono::milliseconds GetTimeForConnection(int connection)
+    {
+      std::default_random_engine generator;
+      std::normal_distribution<double> distribution(42, 5);
+
+      double time = distribution(generator);
+      if (time < 0)
+        time = 0;
+
+      return std::chrono::milliseconds(static_cast<int>(time));
     }
 
     std::map<NodeAlias, IP> named_nodes_;

@@ -109,9 +109,12 @@ void ServerPart(NodeHandle server, const std::atomic<bool>* done)
   Data buffer(1024, 0);
   while (!done->load())
   {
-    int sock = server.Accept(listener);
+    int sock = server.Accept(listener, nullptr, true);
     if (sock < 0)
-      return;
+    {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      continue;
+    }
 
     while (1)
     {
@@ -145,9 +148,10 @@ void ClientPart(NodeHandle client, const std::string& msg)
   {
     Data buffer(msg.length() + 1, 0);
     client.Recv(sock, buffer);
-    std::cout << "Client: " << 
+    std::cout << "Client " << client.GetIP() << ": " <<
       reinterpret_cast<const char*>(buffer.data()) << std::endl;
   }
+  client.CloseNode();
 }
 
 void RunEchoExample()
@@ -156,7 +160,8 @@ void RunEchoExample()
   StatisticalNetwork network = 
     emu.InitializeNetwork(1000000, NetworkModel::eErdeshRenyi);
 
-  NodeHandle client = network.ProvideNode("client");
+  NodeHandle client1 = network.ProvideNode("client1");
+  NodeHandle client2 = network.ProvideNode("client2");
   NodeHandle server = network.ProvideNode("server");
 
 
@@ -164,11 +169,13 @@ void RunEchoExample()
 
   std::thread server_thread(ServerPart, server, &my_job_here_is_done);
 
-  std::thread client_thread(ClientPart, client, 
+  std::thread client1_thread(ClientPart, client1, 
                             "The lady doth protest too much, methinks.");
+  std::thread client2_thread(ClientPart, client2,
+                            "Your tale, sir, would cure deafness.");
 
-  client_thread.join();
-  client.CloseNode();
+  client1_thread.join();
+  client2_thread.join();
 
   my_job_here_is_done.store(true);
   server_thread.join();
